@@ -12,11 +12,26 @@ export default async function handler(req, res) {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase
       .from('games')
-      .select('id, code, status, host_user_id, guest_user_id, host_deck_id, guest_deck_id, first_player, created_at, updated_at, host:users!games_host_user_id_fkey(username), guest:users!games_guest_user_id_fkey(username)')
+      .select('id, code, status, host_user_id, guest_user_id, host_deck_id, guest_deck_id, first_player, created_at, updated_at')
       .or(`host_user_id.eq.${session.user.id},guest_user_id.eq.${session.user.id}`)
       .order('updated_at', { ascending: false });
 
     if (error) throw error;
+
+    const userIds = Array.from(new Set((data ?? [])
+      .flatMap((game) => [game.host_user_id, game.guest_user_id])
+      .filter(Boolean)));
+
+    let usernameById = new Map();
+    if (userIds.length > 0) {
+      const { data: users, error: usersError } = await supabase
+        .from('users')
+        .select('id, username')
+        .in('id', userIds);
+
+      if (usersError) throw usersError;
+      usernameById = new Map((users ?? []).map((user) => [user.id, user.username]));
+    }
 
     const games = (data ?? []).map((game) => ({
       id: game.id,
@@ -29,8 +44,8 @@ export default async function handler(req, res) {
       host_deck_id: game.host_deck_id ?? null,
       guest_deck_id: game.guest_deck_id ?? null,
       first_player: game.first_player ?? null,
-      host_username: Array.isArray(game.host) ? game.host[0]?.username ?? null : game.host?.username ?? null,
-      guest_username: Array.isArray(game.guest) ? game.guest[0]?.username ?? null : game.guest?.username ?? null
+      host_username: usernameById.get(game.host_user_id) ?? null,
+      guest_username: game.guest_user_id ? usernameById.get(game.guest_user_id) ?? null : null
     }));
 
     return sendJson(res, 200, { games });
