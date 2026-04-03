@@ -8,7 +8,11 @@ export function useGameState() {
   const [loading, setLoading] = useState(false);
   const [screen, setScreen] = useState<'setup' | 'playing'>('setup');
 
-  const startGame = async (p1DeckId: string, p2DeckId: string) => {
+  const startGame = async (
+    p1DeckId: string,
+    p2DeckId: string,
+    options?: { firstPlayerId?: 'P1' | 'P2'; seed?: number }
+  ): Promise<GameState | null> => {
     setLoading(true);
     setScreen('playing');
     
@@ -21,24 +25,38 @@ export function useGameState() {
     const p2Leader = p2DeckFull.find(c => c.type === 'leader')!;
     const p2Deck = p2DeckFull.filter(c => c.type !== 'leader');
 
-    const firstPlayer = Math.random() < 0.5 ? 'P1' : 'P2';
-    const initialState = createInitialGameState(p1Deck, p1Leader, p2Deck, p2Leader, firstPlayer);
+    const firstPlayer = options?.firstPlayerId ?? (Math.random() < 0.5 ? 'P1' : 'P2');
+    const initialState = createInitialGameState(p1Deck, p1Leader, p2Deck, p2Leader, firstPlayer, {
+      seed: options?.seed
+    });
     setGameState(initialState);
     setLoading(false);
+    return initialState;
   };
 
-  const advancePhase = () => {
+  const advancePhase = (): GameState | null => {
+    let nextState: GameState | null = null;
     setGameState(prev => {
       if (!prev) return prev;
-      return GameEngine.advancePhase(prev);
+      nextState = GameEngine.advancePhase(prev);
+      return nextState;
     });
+    return nextState;
   };
 
-  const dispatchAction = (action: any) => {
+  const dispatchAction = (action: any): GameState | null => {
+    let nextState: GameState | null = null;
     setGameState(prev => {
       if (!prev) return prev;
-      return GameEngine.processAction(prev, action);
+      nextState = GameEngine.processAction(prev, action);
+      return nextState;
     });
+    return nextState;
+  };
+
+  const replaceGameState = (nextState: GameState | null): void => {
+    setGameState(nextState);
+    if (nextState) setScreen('playing');
   };
 
   return {
@@ -47,6 +65,7 @@ export function useGameState() {
     screen,
     startGame,
     advancePhase,
-    dispatchAction
+    dispatchAction,
+    replaceGameState
   };
 }

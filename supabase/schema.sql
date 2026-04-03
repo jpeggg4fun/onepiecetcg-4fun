@@ -20,6 +20,9 @@ create table if not exists public.games (
   code text not null unique,
   host_user_id uuid not null references public.users(id) on delete cascade,
   guest_user_id uuid references public.users(id) on delete set null,
+  host_deck_id text,
+  guest_deck_id text,
+  first_player text check (first_player in ('P1', 'P2')),
   status text not null default 'waiting' check (status in ('waiting', 'ready', 'in_progress', 'finished')),
   created_at timestamptz not null default now(),
   updated_at timestamptz not null default now()

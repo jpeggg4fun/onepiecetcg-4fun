@@ -1,18 +1,25 @@
 import React, { useEffect, useState } from 'react';
 import './index.css';
 import { useGameState } from './hooks/useGameState';
-import type { Card, PlayerId, PlayerState } from './types/game';
+import type { Card, GameState, PlayerId, PlayerState } from './types/game';
 import {
+  ApiError,
   createGame,
   getSession,
+  getOnlineGameState,
   joinGame,
   listGames,
   loginUser,
   logoutUser,
   registerUser,
+  saveOnlineGameState,
+  startOnlineGame,
+  updateGameDeck,
   type AuthUser,
   type LobbyGame
 } from './api/backend';
+
+const STARTER_DECKS = ["ST-01", "ST-02", "ST-03", "ST-04", "ST-05", "ST-06", "ST-07", "ST-08", "ST-09", "ST-10"];
 
 function AuthScreen({
   mode,
@@ -77,11 +84,17 @@ function LobbyScreen({
   joinCode,
   loading,
   error,
+  deckSaving,
+  currentDeckSelection,
   onSelectGame,
   onJoinCodeChange,
+  onDeckSelectionChange,
+  onSaveDeck,
   onRefresh,
   onCreateGame,
   onJoinGame,
+  onStartGame,
+  onOpenBoard,
   onLogout,
   onStartLocal
 }: {
@@ -91,15 +104,26 @@ function LobbyScreen({
   joinCode: string;
   loading: boolean;
   error: string | null;
+  deckSaving: boolean;
+  currentDeckSelection: string;
   onSelectGame: (gameId: string) => void;
   onJoinCodeChange: (value: string) => void;
+  onDeckSelectionChange: (value: string) => void;
+  onSaveDeck: () => void;
   onRefresh: () => void;
   onCreateGame: () => void;
   onJoinGame: () => void;
+  onStartGame: () => void;
+  onOpenBoard: () => void;
   onLogout: () => void;
   onStartLocal: () => void;
 }) {
   const activeGame = games.find((game) => game.id === selectedGameId) ?? games[0] ?? null;
+  const isHost = activeGame?.host_user_id === user.id;
+  const isGuest = activeGame?.guest_user_id === user.id;
+  const selectedDeck = isHost ? activeGame?.host_deck_id : isGuest ? activeGame?.guest_deck_id : null;
+  const canStart = Boolean(activeGame && isHost && activeGame.status === 'ready' && activeGame.host_deck_id && activeGame.guest_deck_id);
+  const canOpenBoard = Boolean(activeGame && activeGame.status === 'in_progress' && activeGame.host_deck_id && activeGame.guest_deck_id);
 
   return (
     <div className="lobby-shell">
@@ -181,9 +205,35 @@ function LobbyScreen({
                 <span>Convidado</span>
                 <strong>{activeGame.guest_username ?? 'Aguardando...'}</strong>
               </div>
+              {(isHost || isGuest) && (
+                <div className="deck-picker">
+                  <span>Seu deck nesta sala</span>
+                  <div className="join-row">
+                    <select value={currentDeckSelection} onChange={(e) => onDeckSelectionChange(e.target.value)}>
+                      {STARTER_DECKS.map((deckId) => (
+                        <option key={deckId} value={deckId}>{deckId}</option>
+                      ))}
+                    </select>
+                    <button className="btn" disabled={deckSaving || currentDeckSelection === selectedDeck} onClick={onSaveDeck}>
+                      {deckSaving ? 'Salvando...' : 'Salvar deck'}
+                    </button>
+                  </div>
+                  <p className="lobby-note">
+                    Host: <strong>{activeGame.host_deck_id ?? '---'}</strong> · Convidado: <strong>{activeGame.guest_deck_id ?? '---'}</strong>
+                  </p>
+                </div>
+              )}
+              <div className="room-detail-actions">
+                {canStart && (
+                  <button className="btn primary" disabled={loading} onClick={onStartGame}>INICIAR PARTIDA</button>
+                )}
+                {canOpenBoard && (
+                  <button className="btn primary" onClick={onOpenBoard}>ABRIR MESA</button>
+                )}
+              </div>
               <p className="lobby-note">
-                Próximo passo: sincronizar a partida online em tempo real em cima desta sala. A infraestrutura de conta,
-                sessão e lobby já está pronta para deploy.
+                O início da sala agora passa por seleção de deck e confirmação do host. A sincronização turno a turno
+                da partida ainda será a próxima camada.
               </p>
             </div>
           )}
@@ -295,6 +345,24 @@ function HotseatPassOverlay({
         <h2>{title}</h2>
         <p>{description}</p>
         <button className="btn primary" onClick={onContinue}>{buttonLabel}</button>
+      </div>
+    </div>
+  );
+}
+
+function OnlineWaitingOverlay({
+  title,
+  description
+}: {
+  title: string;
+  description: string;
+}) {
+  return (
+    <div className="setup-overlay">
+      <div className="setup-panel">
+        <div className="setup-badge">ONLINE</div>
+        <h2>{title}</h2>
+        <p>{description}</p>
       </div>
     </div>
   );
@@ -447,7 +515,23 @@ const CardPlaceholder = ({ card, isBack = false, style = {}, draggable, onDragSt
   );
 };
 
-const PlayerHalf = ({ isOpponent, playerState, playerId, onDropCard, onCardClick }: { isOpponent: boolean, playerState: PlayerState, playerId: string, onDropCard: any, onCardClick: (c: Card) => void }) => {
+const PlayerHalf = ({
+  isOpponent,
+  playerState,
+  playerId,
+  canInteract,
+  revealHand,
+  onDropCard,
+  onCardClick
+}: {
+  isOpponent: boolean;
+  playerState: PlayerState;
+  playerId: string;
+  canInteract: boolean;
+  revealHand: boolean;
+  onDropCard: any;
+  onCardClick: (c: Card) => void;
+}) => {
   const allowDrop = (e: React.DragEvent) => { e.preventDefault(); };
 
   return (
@@ -471,8 +555,9 @@ const PlayerHalf = ({ isOpponent, playerState, playerId, onDropCard, onCardClick
           <div
             className="zone zone-character"
             data-label="ÁREA DE PERSONAGENS"
-            onDragOver={allowDrop}
+            onDragOver={canInteract ? allowDrop : undefined}
             onDrop={(e) => {
+              if (!canInteract) return;
               const cardId = e.dataTransfer.getData("cardId");
               if (cardId) onDropCard(e, playerId, 'character');
             }}
@@ -482,8 +567,8 @@ const PlayerHalf = ({ isOpponent, playerState, playerId, onDropCard, onCardClick
               return (
                 <div
                   key={c.id}
-                  onDragOver={(e) => { e.preventDefault(); e.stopPropagation(); }}
-                  onDrop={(e) => { e.preventDefault(); e.stopPropagation(); onDropCard(e, playerId, 'character_target', c.id); }}
+                  onDragOver={canInteract ? (e) => { e.preventDefault(); e.stopPropagation(); } : undefined}
+                  onDrop={canInteract ? (e) => { e.preventDefault(); e.stopPropagation(); onDropCard(e, playerId, 'character_target', c.id); } : undefined}
                   style={{ position: 'relative' }}
                 >
                   <CardPlaceholder card={c} onClick={() => onCardClick(c)} />
@@ -513,16 +598,19 @@ const PlayerHalf = ({ isOpponent, playerState, playerId, onDropCard, onCardClick
             <div
               className="zone zone-leader"
               data-label="LÍDER"
-              onDragOver={allowDrop}
-              onDrop={(e) => onDropCard(e, playerId, 'leader_target', playerState.leader?.id)}
+              onDragOver={canInteract ? allowDrop : undefined}
+              onDrop={(e) => {
+                if (!canInteract) return;
+                onDropCard(e, playerId, 'leader_target', playerState.leader?.id);
+              }}
             >
               {playerState.leader && (() => {
                 const attachedDon = playerState.don_given.filter(d => (d.state as any).targetId === playerState.leader!.id).length;
                 return (
                   <div
                     style={{position: 'relative', width: '100%', height: '100%', display: 'flex', justifyContent: 'center', alignItems: 'center'}}
-                    onDragOver={allowDrop}
-                    onDrop={(e) => { e.preventDefault(); e.stopPropagation(); onDropCard(e, playerId, 'leader_target', playerState.leader?.id); }}
+                    onDragOver={canInteract ? allowDrop : undefined}
+                    onDrop={canInteract ? (e) => { e.preventDefault(); e.stopPropagation(); onDropCard(e, playerId, 'leader_target', playerState.leader?.id); } : undefined}
                   >
                     <CardPlaceholder card={playerState.leader} onClick={() => onCardClick(playerState.leader!)} />
                     {attachedDon > 0 && (
@@ -535,7 +623,15 @@ const PlayerHalf = ({ isOpponent, playerState, playerId, onDropCard, onCardClick
               })()}
             </div>
 
-            <div className="zone zone-stage" data-label="CENÁRIO" onDragOver={allowDrop} onDrop={(e) => onDropCard(e, playerId, 'stage')}>
+            <div
+              className="zone zone-stage"
+              data-label="CENÁRIO"
+              onDragOver={canInteract ? allowDrop : undefined}
+              onDrop={(e) => {
+                if (!canInteract) return;
+                onDropCard(e, playerId, 'stage');
+              }}
+            >
               {playerState.field.stage && <CardPlaceholder card={playerState.field.stage} onClick={() => onCardClick(playerState.field.stage!)} />}
             </div>
 
@@ -545,9 +641,9 @@ const PlayerHalf = ({ isOpponent, playerState, playerId, onDropCard, onCardClick
                   key={don.id}
                   card={don}
                   style={{transform: 'scale(0.8)'}}
-                  draggable={!isOpponent && !don.state.rested}
+                  draggable={canInteract && !don.state.rested}
                   onDragStart={(e: React.DragEvent) => {
-                    if (isOpponent || don.state.rested) return;
+                    if (!canInteract || don.state.rested) return;
                     e.dataTransfer.setData("donId", don.id);
                   }}
                   onClick={() => onCardClick(don)}
@@ -568,14 +664,14 @@ const PlayerHalf = ({ isOpponent, playerState, playerId, onDropCard, onCardClick
            <CardPlaceholder 
              key={c.id} 
              card={c} 
-             isBack={isOpponent} 
-             draggable={!isOpponent} // Só arrasta as cartas se não for oponente de cima
+             isBack={!revealHand}
+             draggable={canInteract}
              onDragStart={(e: React.DragEvent) => {
-               if (isOpponent) return;
+               if (!canInteract) return;
                e.dataTransfer.setData("cardId", c.id);
              }}
              onClick={() => {
-               if (!isOpponent) onCardClick(c);
+               if (revealHand) onCardClick(c);
              }}
            />
         ))}
@@ -596,12 +692,12 @@ class ErrorBoundary extends React.Component<any, { error: Error | null }> {
 }
 
 function MainApp() {
-  const { gameState, loading, screen, startGame, advancePhase, dispatchAction } = useGameState();
+  const { gameState, loading, screen, startGame, advancePhase, dispatchAction, replaceGameState } = useGameState();
   const [focusedCard, setFocusedCard] = useState<Card | null>(null);
   const [setupViewer, setSetupViewer] = useState<'P1' | 'P2' | null>(null);
   const [defenseViewer, setDefenseViewer] = useState<PlayerId | null>(null);
   const [selectedCounterIds, setSelectedCounterIds] = useState<string[]>([]);
-  const [onlineMode, setOnlineMode] = useState<'auth' | 'lobby' | 'local'>('auth');
+  const [onlineMode, setOnlineMode] = useState<'auth' | 'lobby' | 'local' | 'online'>('auth');
   const [authMode, setAuthMode] = useState<'login' | 'register'>('login');
   const [authUser, setAuthUser] = useState<AuthUser | null>(null);
   const [authUsername, setAuthUsername] = useState('');
@@ -612,6 +708,13 @@ function MainApp() {
   const [games, setGames] = useState<LobbyGame[]>([]);
   const [selectedGameId, setSelectedGameId] = useState<string | null>(null);
   const [joinCode, setJoinCode] = useState('');
+  const [selectedLobbyDeck, setSelectedLobbyDeck] = useState('ST-01');
+  const [deckSaving, setDeckSaving] = useState(false);
+  const [activeOnlineGameId, setActiveOnlineGameId] = useState<string | null>(null);
+  const [activeOnlineRoom, setActiveOnlineRoom] = useState<LobbyGame | null>(null);
+  const [lastSnapshotId, setLastSnapshotId] = useState<string | null>(null);
+  const [syncState, setSyncState] = useState<'idle' | 'saving' | 'syncing' | 'conflict'>('idle');
+  const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
   useEffect(() => {
     let active = true;
@@ -668,6 +771,46 @@ function MainApp() {
     };
   }, [authUser, onlineMode]);
 
+  useEffect(() => {
+    if (onlineMode !== 'online' || !activeOnlineGameId || !authUser) return;
+
+    let active = true;
+    let intervalId: number | null = null;
+
+    const syncRoomState = async () => {
+      try {
+        setSyncState((current) => current === 'saving' ? current : 'syncing');
+        const { game, snapshot } = await getOnlineGameState(activeOnlineGameId);
+        setActiveOnlineRoom((current) => current ? { ...current, ...game } : current);
+        if (!active) return;
+        if (!snapshot || snapshot.id === lastSnapshotId) {
+          setSyncState((current) => current === 'saving' ? current : 'idle');
+          return;
+        }
+
+        const stateJson = snapshot.state_json as Record<string, unknown>;
+        if (stateJson && 'players' in stateJson) {
+          replaceGameState(stateJson as unknown as GameState);
+          setLastSnapshotId(snapshot.id);
+          setSyncMessage(null);
+        }
+        setSyncState((current) => current === 'saving' ? current : 'idle');
+      } catch (error) {
+        if (!active) return;
+        setOnlineError(error instanceof Error ? error.message : 'Falha ao sincronizar a partida.');
+        setSyncState('idle');
+      }
+    };
+
+    syncRoomState();
+    intervalId = window.setInterval(syncRoomState, 2500);
+
+    return () => {
+      active = false;
+      if (intervalId !== null) window.clearInterval(intervalId);
+    };
+  }, [activeOnlineGameId, authUser, lastSnapshotId, onlineMode, replaceGameState]);
+
   const runAuthFlow = async () => {
     setOnlineLoading(true);
     setOnlineError(null);
@@ -694,7 +837,15 @@ function MainApp() {
     try {
       const response = await listGames();
       setGames(response.games);
-      setSelectedGameId((current) => current ?? response.games[0]?.id ?? null);
+      setSelectedGameId((current) => {
+        const nextSelectedId = current ?? response.games[0]?.id ?? null;
+        const selectedGame = response.games.find((game) => game.id === nextSelectedId);
+        if (selectedGame && authUser) {
+          const ownDeck = selectedGame.host_user_id === authUser.id ? selectedGame.host_deck_id : selectedGame.guest_deck_id;
+          setSelectedLobbyDeck(ownDeck ?? 'ST-01');
+        }
+        return nextSelectedId;
+      });
     } catch (error) {
       setOnlineError(error instanceof Error ? error.message : 'Falha ao atualizar o lobby.');
     } finally {
@@ -740,6 +891,9 @@ function MainApp() {
       setAuthUser(null);
       setGames([]);
       setSelectedGameId(null);
+      setActiveOnlineRoom(null);
+      setSyncMessage(null);
+      setSyncState('idle');
       setOnlineMode('auth');
       setAuthPassword('');
       setAuthUsername('');
@@ -762,7 +916,11 @@ function MainApp() {
         password={authPassword}
         error={onlineError}
         loading={onlineLoading}
-        onContinueOffline={() => setOnlineMode('local')}
+        onContinueOffline={() => {
+          setActiveOnlineGameId(null);
+          setLastSnapshotId(null);
+          setOnlineMode('local');
+        }}
         onModeChange={setAuthMode}
         onUsernameChange={setAuthUsername}
         onPasswordChange={setAuthPassword}
@@ -772,6 +930,72 @@ function MainApp() {
   }
 
   if (onlineMode === 'lobby' && authUser) {
+    const selectedGame = games.find((game) => game.id === selectedGameId) ?? null;
+    const handleSelectGame = (gameId: string) => {
+      setSelectedGameId(gameId);
+      const game = games.find((item) => item.id === gameId);
+      if (!game) return;
+      const ownDeck = game.host_user_id === authUser.id ? game.host_deck_id : game.guest_deck_id;
+      setSelectedLobbyDeck(ownDeck ?? 'ST-01');
+    };
+
+    const handleSaveDeck = async () => {
+      if (!selectedGame) return;
+      setDeckSaving(true);
+      setOnlineError(null);
+
+      try {
+        await updateGameDeck(selectedGame.id, selectedLobbyDeck);
+        await refreshLobby();
+      } catch (error) {
+        setOnlineError(error instanceof Error ? error.message : 'Falha ao salvar deck.');
+      } finally {
+        setDeckSaving(false);
+      }
+    };
+
+    const handleStartRoom = async () => {
+      if (!selectedGame) return;
+      setOnlineLoading(true);
+      setOnlineError(null);
+
+      try {
+        await startOnlineGame(selectedGame.id);
+        await refreshLobby();
+      } catch (error) {
+        setOnlineError(error instanceof Error ? error.message : 'Falha ao iniciar a partida.');
+      } finally {
+        setOnlineLoading(false);
+      }
+    };
+
+    const handleOpenBoard = async () => {
+      if (!selectedGame?.host_deck_id || !selectedGame.guest_deck_id) return;
+      const roomState = await getOnlineGameState(selectedGame.id);
+      setActiveOnlineRoom({ ...selectedGame, ...roomState.game });
+      const snapshotState = roomState.snapshot?.state_json as Record<string, unknown> | undefined;
+
+      if (snapshotState && 'players' in snapshotState) {
+        replaceGameState(snapshotState as unknown as GameState);
+        setLastSnapshotId(roomState.snapshot?.id ?? null);
+        setSyncMessage(null);
+      } else {
+        const nextState = await startGame(selectedGame.host_deck_id, selectedGame.guest_deck_id, {
+          firstPlayerId: selectedGame.first_player ?? undefined,
+          seed: Number(snapshotState?.seed ?? Date.now())
+        });
+        if (nextState) {
+          const saved = await saveOnlineGameState(selectedGame.id, nextState, nextState.turn, nextState.phase, roomState.snapshot?.id ?? null);
+          setLastSnapshotId(saved.snapshot.id);
+          setSyncMessage(null);
+        }
+      }
+
+      setActiveOnlineGameId(selectedGame.id);
+      setSyncState('idle');
+      setOnlineMode('online');
+    };
+
     return (
       <LobbyScreen
         user={authUser}
@@ -780,13 +1004,24 @@ function MainApp() {
         joinCode={joinCode}
         loading={onlineLoading}
         error={onlineError}
-        onSelectGame={setSelectedGameId}
+        deckSaving={deckSaving}
+        currentDeckSelection={selectedLobbyDeck}
+        onSelectGame={handleSelectGame}
         onJoinCodeChange={setJoinCode}
+        onDeckSelectionChange={setSelectedLobbyDeck}
+        onSaveDeck={handleSaveDeck}
         onRefresh={refreshLobby}
         onCreateGame={handleCreateOnlineGame}
         onJoinGame={handleJoinOnlineGame}
+        onStartGame={handleStartRoom}
+        onOpenBoard={handleOpenBoard}
         onLogout={handleLogout}
-        onStartLocal={() => setOnlineMode('local')}
+        onStartLocal={() => {
+          setActiveOnlineGameId(null);
+          setActiveOnlineRoom(null);
+          setLastSnapshotId(null);
+          setOnlineMode('local');
+        }}
       />
     );
   }
@@ -804,14 +1039,53 @@ function MainApp() {
   const waitingFor = gameState.waiting_for;
   const activePlayer = gameState.active_player;
   const opponentPlayer = activePlayer === 'P1' ? 'P2' : 'P1';
+  const localPlayerId: PlayerId = onlineMode === 'online' && authUser && activeOnlineRoom
+    ? activeOnlineRoom.host_user_id === authUser.id
+      ? 'P1'
+      : 'P2'
+    : 'P1';
+  const remotePlayerId: PlayerId = localPlayerId === 'P1' ? 'P2' : 'P1';
+  const isOnlineBoard = onlineMode === 'online';
+  const isLocalUsersTurn = !isOnlineBoard || gameState.active_player === localPlayerId;
   const setupPendingPlayer =
     gameState.phase === 'setup' && waitingFor
       ? (!waitingFor.p1_ready ? 'P1' : !waitingFor.p2_ready ? 'P2' : null)
       : null;
-  const needsPassScreen = setupPendingPlayer !== null && setupViewer !== setupPendingPlayer;
+  const needsPassScreen = !isOnlineBoard && setupPendingPlayer !== null && setupViewer !== setupPendingPlayer;
   const attackContext = gameState.attack_context;
   const defensePending = attackContext?.phase === 'AWAITING_DEFENSE' ? opponentPlayer : null;
-  const defenseNeedsPass = defensePending !== null && defenseViewer !== defensePending;
+  const defenseNeedsPass = !isOnlineBoard && defensePending !== null && defenseViewer !== defensePending;
+  const canInteractWithPlayer = (playerId: PlayerId) => !isOnlineBoard || playerId === localPlayerId;
+
+  const persistOnlineState = (nextState: GameState | null) => {
+    if (!isOnlineBoard || !activeOnlineGameId || !nextState) return;
+    setSyncState('saving');
+    setSyncMessage('Sincronizando sua jogada...');
+    void saveOnlineGameState(activeOnlineGameId, nextState, nextState.turn, nextState.phase, lastSnapshotId)
+      .then((result) => {
+        setLastSnapshotId(result.snapshot.id);
+        setSyncState('idle');
+        setSyncMessage('Jogada sincronizada.');
+      })
+      .catch((error) => {
+        if (error instanceof ApiError && error.status === 409) {
+          const latestSnapshot = error.payload.latestSnapshot as { id?: string; state_json?: unknown } | undefined;
+          const latestState = latestSnapshot?.state_json as Record<string, unknown> | undefined;
+
+          if (latestState && 'players' in latestState) {
+            replaceGameState(latestState as unknown as GameState);
+          }
+
+          setLastSnapshotId(typeof latestSnapshot?.id === 'string' ? latestSnapshot.id : null);
+          setSyncState('conflict');
+          setSyncMessage('Outra jogada entrou primeiro. A mesa foi atualizada para o estado mais recente.');
+          return;
+        }
+
+        setOnlineError(error instanceof Error ? error.message : 'Falha ao salvar a partida online.');
+        setSyncState('idle');
+      });
+  };
 
   const getCardOwner = (cardId: string): PlayerId | null => {
     if (p1.leader?.id === cardId || p1.hand.some((card) => card.id === cardId) || p1.field.characters.some((card) => card.id === cardId) || p1.field.stage?.id === cardId || p1.trash.some((card) => card.id === cardId) || p1.cost_area.some((card) => card.id === cardId) || p1.don_given.some((card) => card.id === cardId)) return 'P1';
@@ -862,36 +1136,42 @@ function MainApp() {
 
   const handleDropCard = (e: React.DragEvent, targetPlayerId: string, zoneType: string, targetCardId?: string) => {
     e.preventDefault();
+    if (!canInteractWithPlayer(targetPlayerId as PlayerId) || !isLocalUsersTurn) return;
     const cardId = e.dataTransfer.getData("cardId");
     const donId = e.dataTransfer.getData("donId");
 
     if (donId) {
-      dispatchAction({ type: 'GIVE_DON', donId, targetPlayerId, targetCardId });
+      const nextState = dispatchAction({ type: 'GIVE_DON', donId, targetPlayerId, targetCardId });
+      persistOnlineState(nextState);
       return;
     }
 
     if (cardId) {
-      // Emite pro hook/engine a ação de jogar carta
-      dispatchAction({ type: 'PLAY_CARD', cardId, targetPlayerId, zoneType });
+      const nextState = dispatchAction({ type: 'PLAY_CARD', cardId, targetPlayerId, zoneType });
+      persistOnlineState(nextState);
     }
   };
 
   const handleSetupDecision = (decision: 'MULLIGAN' | 'KEEP_HAND') => {
-    if (!setupPendingPlayer) return;
-    dispatchAction({ type: 'SETUP_DECISION', playerId: setupPendingPlayer, decision });
+    if (!setupPendingPlayer || (isOnlineBoard && setupPendingPlayer !== localPlayerId)) return;
+    const nextState = dispatchAction({ type: 'SETUP_DECISION', playerId: setupPendingPlayer, decision });
+    persistOnlineState(nextState);
     setSetupViewer(null);
   };
 
   const handleDeclareAttack = (attackerId: string, targetId: string) => {
-    dispatchAction({ type: 'DECLARE_ATTACK', attackerId, targetId });
+    if (!isLocalUsersTurn) return;
+    const nextState = dispatchAction({ type: 'DECLARE_ATTACK', attackerId, targetId });
+    persistOnlineState(nextState);
     setFocusedCard(null);
     setDefenseViewer(null);
     setSelectedCounterIds([]);
   };
 
   const handleDefenseDecision = (decision: 'USE_BLOCKER' | 'USE_COUNTER' | 'NO_DEFENSE', extra: Record<string, unknown> = {}) => {
-    if (!defensePending) return;
-    dispatchAction({ type: 'DEFENSE_DECISION', playerId: defensePending, decision, ...extra });
+    if (!defensePending || (isOnlineBoard && defensePending !== localPlayerId)) return;
+    const nextState = dispatchAction({ type: 'DEFENSE_DECISION', playerId: defensePending, decision, ...extra });
+    persistOnlineState(nextState);
     setDefenseViewer(null);
     setSelectedCounterIds([]);
     setFocusedCard(null);
@@ -902,24 +1182,62 @@ function MainApp() {
   };
 
   const handleAdvancePhase = () => {
-    if (attackContext) return;
-    advancePhase();
+    if (attackContext || !isLocalUsersTurn) return;
+    const nextState = advancePhase();
+    persistOnlineState(nextState);
   };
 
   return (
     <div className="app-container">
       {setupPendingPlayer && (
-        <SetupFlow
-          playerId={setupPendingPlayer}
-          playerState={gameState.players[setupPendingPlayer]}
-          needsPass={needsPassScreen}
-          onReadyForPlayer={() => setSetupViewer(setupPendingPlayer)}
-          onDecision={handleSetupDecision}
-        />
+        isOnlineBoard ? (
+          setupPendingPlayer === localPlayerId ? (
+            <SetupFlow
+              playerId={setupPendingPlayer}
+              playerState={gameState.players[setupPendingPlayer]}
+              needsPass={false}
+              onReadyForPlayer={() => undefined}
+              onDecision={handleSetupDecision}
+            />
+          ) : (
+            <OnlineWaitingOverlay
+              title={`Aguardando decisão de ${setupPendingPlayer}`}
+              description="O outro jogador ainda está resolvendo o mulligan. Assim que ele confirmar a mão, a partida continua automaticamente."
+            />
+          )
+        ) : (
+          <SetupFlow
+            playerId={setupPendingPlayer}
+            playerState={gameState.players[setupPendingPlayer]}
+            needsPass={needsPassScreen}
+            onReadyForPlayer={() => setSetupViewer(setupPendingPlayer)}
+            onDecision={handleSetupDecision}
+          />
+        )
       )}
 
       {defensePending && (
-        defenseNeedsPass ? (
+        isOnlineBoard ? (
+          defensePending === localPlayerId ? (
+            <DefenseOverlay
+              defenderId={defensePending}
+              attackerPower={attackContext!.attacker_power_final}
+              targetLabel={currentTargetLabel}
+              blockers={availableBlockers}
+              counters={availableCounters}
+              selectedCounterIds={selectedCounterIds}
+              onToggleCounter={handleToggleCounter}
+              onUseCounter={() => handleDefenseDecision('USE_COUNTER', { cardIds: selectedCounterIds })}
+              onUseBlocker={(blockerId) => handleDefenseDecision('USE_BLOCKER', { blockerId })}
+              onNoDefense={() => handleDefenseDecision('NO_DEFENSE')}
+            />
+          ) : (
+            <OnlineWaitingOverlay
+              title={`Aguardando defesa de ${defensePending}`}
+              description="O defensor está escolhendo blocker, counter ou aceitando o dano. O estado da sala será sincronizado assim que a resposta chegar."
+            />
+          )
+        ) : defenseNeedsPass ? (
           <HotseatPassOverlay
             title={`Passe o dispositivo para ${defensePending}`}
             description="O defensor agora escolhe blocker, counter ou aceita o dano. A mão defensiva fica oculta até esta confirmação."
@@ -968,7 +1286,7 @@ function MainApp() {
                    {focusedCard.card_text === 'NULL' || !focusedCard.card_text ? <i style={{opacity: 0.5}}>Sem efeito descrito.</i> : focusedCard.card_text}
                 </div>
 
-                {focusedOwner === activePlayer && focusedAttackTargets.length > 0 && (
+                {focusedOwner === activePlayer && focusedOwner === localPlayerId && focusedAttackTargets.length > 0 && (
                   <div className="card-action-panel">
                     <div className="card-action-title">Atacar</div>
                     <div className="card-action-grid">
@@ -990,11 +1308,40 @@ function MainApp() {
       )}
 
       <div className="game-hud">
-        <div style={{color: 'white', marginBottom: '8px', fontSize: '14px'}}>Turno: {gameState.turn} <br/> <b style={{color: '#f5c842'}}>{gameState.active_player} ATIVO</b></div>
-        <button className="btn" onClick={() => setOnlineMode(authUser ? 'lobby' : 'auth')}>
+        <div style={{color: 'white', marginBottom: '8px', fontSize: '14px'}}>
+          Turno: {gameState.turn}
+          <br />
+          <b style={{color: '#f5c842'}}>{gameState.active_player} ATIVO</b>
+          {isOnlineBoard && (
+            <>
+              <br />
+              <span style={{opacity: 0.8}}>Você é {localPlayerId}</span>
+              <br />
+              <span className={`sync-pill ${isLocalUsersTurn ? 'is-active' : 'is-waiting'}`}>
+                {isLocalUsersTurn ? 'Sua vez' : 'Vez do oponente'}
+              </span>
+              {syncMessage && (
+                <>
+                  <br />
+                  <span className={`sync-pill ${syncState === 'conflict' ? 'is-conflict' : syncState === 'saving' || syncState === 'syncing' ? 'is-syncing' : 'is-idle'}`}>
+                    {syncMessage}
+                  </span>
+                </>
+              )}
+            </>
+          )}
+        </div>
+        <button className="btn" onClick={() => {
+          setActiveOnlineGameId(null);
+          setActiveOnlineRoom(null);
+          setLastSnapshotId(null);
+          setSyncMessage(null);
+          setSyncState('idle');
+          setOnlineMode(authUser ? 'lobby' : 'auth');
+        }}>
           {authUser ? 'Voltar ao lobby' : 'Voltar ao login'}
         </button>
-        <button className="btn" disabled={Boolean(attackContext)} onClick={handleAdvancePhase}>
+        <button className="btn" disabled={Boolean(attackContext) || !isLocalUsersTurn} onClick={handleAdvancePhase}>
           {gameState.phase === 'main' ? 'Encerrar Principal' : 'Próxima Fase'}
         </button>
       </div>
@@ -1009,8 +1356,24 @@ function MainApp() {
       </div>
 
       <div className="game-board">
-        <PlayerHalf isOpponent={true} playerState={p2} playerId="P2" onDropCard={handleDropCard} onCardClick={setFocusedCard} />
-        <PlayerHalf isOpponent={false} playerState={p1} playerId="P1" onDropCard={handleDropCard} onCardClick={setFocusedCard} />
+        <PlayerHalf
+          isOpponent={true}
+          playerState={gameState.players[remotePlayerId]}
+          playerId={remotePlayerId}
+          canInteract={false}
+          revealHand={false}
+          onDropCard={handleDropCard}
+          onCardClick={setFocusedCard}
+        />
+        <PlayerHalf
+          isOpponent={false}
+          playerState={gameState.players[localPlayerId]}
+          playerId={localPlayerId}
+          canInteract={isLocalUsersTurn}
+          revealHand={true}
+          onDropCard={handleDropCard}
+          onCardClick={setFocusedCard}
+        />
       </div>
     </div>
   );

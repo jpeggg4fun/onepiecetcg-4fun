@@ -134,6 +134,7 @@ input {
 }
 
 .auth-field input,
+.deck-picker select,
 .join-row input {
   width: 100%;
   border: 1px solid var(--border-color);
@@ -273,6 +274,27 @@ input {
 .detail-pill strong {
   color: var(--color-primary);
   font-size: 1rem;
+}
+
+.deck-picker {
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  grid-column: 1 / -1;
+}
+
+.deck-picker span {
+  color: var(--text-muted);
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+
+.room-detail-actions {
+  grid-column: 1 / -1;
+  display: flex;
+  gap: 10px;
+  flex-wrap: wrap;
 }
 
 .lobby-note,
@@ -553,6 +575,48 @@ input {
   flex-direction: column;
   gap: 10px;
   z-index: 9999;
+}
+
+.sync-pill {
+  display: inline-flex;
+  align-items: center;
+  width: fit-content;
+  margin-top: 6px;
+  padding: 5px 10px;
+  border-radius: var(--radius-full);
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.6px;
+  border: 1px solid var(--border-color);
+  background: rgba(255, 255, 255, 0.04);
+}
+
+.sync-pill.is-active {
+  color: var(--color-primary);
+  border-color: rgba(245, 200, 66, 0.28);
+  background: rgba(245, 200, 66, 0.12);
+}
+
+.sync-pill.is-waiting {
+  color: var(--text-muted);
+}
+
+.sync-pill.is-syncing {
+  color: #bfdbfe;
+  border-color: rgba(96, 165, 250, 0.28);
+  background: rgba(59, 130, 246, 0.12);
+}
+
+.sync-pill.is-conflict {
+  color: #fecaca;
+  border-color: rgba(239, 68, 68, 0.3);
+  background: rgba(239, 68, 68, 0.12);
+}
+
+.sync-pill.is-idle {
+  color: #bbf7d0;
+  border-color: rgba(16, 185, 129, 0.24);
+  background: rgba(16, 185, 129, 0.12);
 }
 
 .btn {
