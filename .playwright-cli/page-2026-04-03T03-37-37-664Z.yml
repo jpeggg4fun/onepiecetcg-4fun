@@ -1,0 +1,30 @@
+- generic [ref=e3]:
+  - heading "ONE PIECE TCG - HOTSEAT" [level=1] [ref=e4]
+  - generic [ref=e5]:
+    - generic [ref=e6]:
+      - heading "Deck Jogador 1" [level=3] [ref=e7]
+      - combobox [ref=e8]:
+        - option "ST-01" [selected]
+        - option "ST-02"
+        - option "ST-03"
+        - option "ST-04"
+        - option "ST-05"
+        - option "ST-06"
+        - option "ST-07"
+        - option "ST-08"
+        - option "ST-09"
+        - option "ST-10"
+    - generic [ref=e9]:
+      - heading "Deck Jogador 2" [level=3] [ref=e10]
+      - combobox [ref=e11]:
+        - option "ST-01" [selected]
+        - option "ST-02"
+        - option "ST-03"
+        - option "ST-04"
+        - option "ST-05"
+        - option "ST-06"
+        - option "ST-07"
+        - option "ST-08"
+        - option "ST-09"
+        - option "ST-10"
+  - button "INICIAR JOGO" [ref=e12] [cursor=pointer]
