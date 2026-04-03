@@ -12,7 +12,7 @@ export default async function handler(req, res) {
     const supabase = getSupabaseAdmin();
     const { data, error } = await supabase
       .from('games')
-      .select('id, code, status, host_user_id, guest_user_id, host_deck_id, guest_deck_id, first_player, created_at, updated_at, host:host_user_id(username), guest:guest_user_id(username)')
+      .select('id, code, status, host_user_id, guest_user_id, host_deck_id, guest_deck_id, first_player, created_at, updated_at, host:users!games_host_user_id_fkey(username), guest:users!games_guest_user_id_fkey(username)')
       .or(`host_user_id.eq.${session.user.id},guest_user_id.eq.${session.user.id}`)
       .order('updated_at', { ascending: false });
 
