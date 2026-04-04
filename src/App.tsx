@@ -716,6 +716,47 @@ function MainApp() {
   const [syncState, setSyncState] = useState<'idle' | 'saving' | 'syncing' | 'conflict'>('idle');
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
 
+  const clearTransientBoardUi = () => {
+    setFocusedCard(null);
+    setSetupViewer(null);
+    setDefenseViewer(null);
+    setSelectedCounterIds([]);
+  };
+
+  const resyncOnlineRoomState = async (
+    gameId: string,
+    options?: { preserveSavingState?: boolean; conflictMessage?: string | null }
+  ) => {
+    if (!gameId) return null;
+
+    if (!options?.preserveSavingState) {
+      setSyncState('syncing');
+      setSyncMessage('Atualizando a mesa...');
+    }
+
+    const { game, snapshot } = await getOnlineGameState(gameId);
+    setActiveOnlineRoom((current) => current ? { ...current, ...game } : current);
+
+    if (snapshot) {
+      const stateJson = snapshot.state_json as Record<string, unknown>;
+      if (stateJson && 'players' in stateJson) {
+        clearTransientBoardUi();
+        replaceGameState(stateJson as unknown as GameState);
+      }
+      setLastSnapshotId(snapshot.id);
+    }
+
+    if (options?.conflictMessage) {
+      setSyncState('conflict');
+      setSyncMessage(options.conflictMessage);
+    } else if (!options?.preserveSavingState) {
+      setSyncState('idle');
+      setSyncMessage(null);
+    }
+
+    return snapshot ?? null;
+  };
+
   useEffect(() => {
     let active = true;
 
@@ -779,22 +820,14 @@ function MainApp() {
 
     const syncRoomState = async () => {
       try {
-        setSyncState((current) => current === 'saving' ? current : 'syncing');
-        const { game, snapshot } = await getOnlineGameState(activeOnlineGameId);
-        setActiveOnlineRoom((current) => current ? { ...current, ...game } : current);
+        const snapshot = await resyncOnlineRoomState(activeOnlineGameId, { preserveSavingState: true });
         if (!active) return;
         if (!snapshot || snapshot.id === lastSnapshotId) {
           setSyncState((current) => current === 'saving' ? current : 'idle');
           return;
         }
-
-        const stateJson = snapshot.state_json as Record<string, unknown>;
-        if (stateJson && 'players' in stateJson) {
-          replaceGameState(stateJson as unknown as GameState);
-          setLastSnapshotId(snapshot.id);
-          setSyncMessage(null);
-        }
         setSyncState((current) => current === 'saving' ? current : 'idle');
+        setSyncMessage((current) => current === 'Sincronizando sua jogada...' ? current : null);
       } catch (error) {
         if (!active) return;
         setOnlineError(error instanceof Error ? error.message : 'Falha ao sincronizar a partida.');
@@ -805,11 +838,22 @@ function MainApp() {
     syncRoomState();
     intervalId = window.setInterval(syncRoomState, 2500);
 
+    const handleVisibilityChange = () => {
+      if (document.visibilityState === 'visible') {
+        void syncRoomState();
+      }
+    };
+
+    window.addEventListener('focus', handleVisibilityChange);
+    document.addEventListener('visibilitychange', handleVisibilityChange);
+
     return () => {
       active = false;
       if (intervalId !== null) window.clearInterval(intervalId);
+      window.removeEventListener('focus', handleVisibilityChange);
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
     };
-  }, [activeOnlineGameId, authUser, lastSnapshotId, onlineMode, replaceGameState]);
+  }, [activeOnlineGameId, authUser, lastSnapshotId, onlineMode]);
 
   const runAuthFlow = async () => {
     setOnlineLoading(true);
@@ -976,6 +1020,7 @@ function MainApp() {
       const snapshotState = roomState.snapshot?.state_json as Record<string, unknown> | undefined;
 
       if (snapshotState && 'players' in snapshotState) {
+        clearTransientBoardUi();
         replaceGameState(snapshotState as unknown as GameState);
         setLastSnapshotId(roomState.snapshot?.id ?? null);
         setSyncMessage(null);
@@ -1069,16 +1114,12 @@ function MainApp() {
       })
       .catch((error) => {
         if (error instanceof ApiError && error.status === 409) {
-          const latestSnapshot = error.payload.latestSnapshot as { id?: string; state_json?: unknown } | undefined;
-          const latestState = latestSnapshot?.state_json as Record<string, unknown> | undefined;
-
-          if (latestState && 'players' in latestState) {
-            replaceGameState(latestState as unknown as GameState);
-          }
-
-          setLastSnapshotId(typeof latestSnapshot?.id === 'string' ? latestSnapshot.id : null);
-          setSyncState('conflict');
-          setSyncMessage('Outra jogada entrou primeiro. A mesa foi atualizada para o estado mais recente.');
+          void resyncOnlineRoomState(activeOnlineGameId, {
+            conflictMessage: 'Outra jogada entrou primeiro. A mesa foi atualizada para o estado mais recente.'
+          }).catch((resyncError) => {
+            setOnlineError(resyncError instanceof Error ? resyncError.message : 'Falha ao ressincronizar a partida.');
+            setSyncState('idle');
+          });
           return;
         }
 
