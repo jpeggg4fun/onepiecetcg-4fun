@@ -274,12 +274,14 @@ function SetupFlow({
   playerId,
   playerState,
   needsPass,
+  disabled = false,
   onReadyForPlayer,
   onDecision
 }: {
   playerId: 'P1' | 'P2';
   playerState: PlayerState;
   needsPass: boolean;
+  disabled?: boolean;
   onReadyForPlayer: () => void;
   onDecision: (decision: 'MULLIGAN' | 'KEEP_HAND') => void;
 }) {
@@ -293,7 +295,7 @@ function SetupFlow({
             A mão inicial do outro jogador fica escondida. Quando {playerId} estiver pronto para olhar a própria mão,
             continue.
           </p>
-          <button className="btn primary" onClick={onReadyForPlayer}>MOSTRAR MÃO DE {playerId}</button>
+          <button className="btn primary" disabled={disabled} onClick={onReadyForPlayer}>MOSTRAR MÃO DE {playerId}</button>
         </div>
       </div>
     );
@@ -319,8 +321,8 @@ function SetupFlow({
         </div>
 
         <div className="setup-actions">
-          <button className="btn" onClick={() => onDecision('MULLIGAN')}>FAZER MULLIGAN</button>
-          <button className="btn primary" onClick={() => onDecision('KEEP_HAND')}>MANTER MÃO</button>
+          <button className="btn" disabled={disabled} onClick={() => onDecision('MULLIGAN')}>FAZER MULLIGAN</button>
+          <button className="btn primary" disabled={disabled} onClick={() => onDecision('KEEP_HAND')}>MANTER MÃO</button>
         </div>
       </div>
     </div>
@@ -375,6 +377,7 @@ function DefenseOverlay({
   blockers,
   counters,
   selectedCounterIds,
+  disabled = false,
   onToggleCounter,
   onUseCounter,
   onUseBlocker,
@@ -386,6 +389,7 @@ function DefenseOverlay({
   blockers: Card[];
   counters: Card[];
   selectedCounterIds: string[];
+  disabled?: boolean;
   onToggleCounter: (cardId: string) => void;
   onUseCounter: () => void;
   onUseBlocker: (blockerId: string) => void;
@@ -424,7 +428,7 @@ function DefenseOverlay({
             ) : (
               <div className="defense-grid">
                 {blockers.map((blocker) => (
-                  <button key={blocker.id} className="action-chip" onClick={() => onUseBlocker(blocker.id)}>
+                  <button key={blocker.id} className="action-chip" disabled={disabled} onClick={() => onUseBlocker(blocker.id)}>
                     {blocker.name}
                   </button>
                 ))}
@@ -444,6 +448,7 @@ function DefenseOverlay({
                     <button
                       key={card.id}
                       className={`counter-item ${selected ? 'selected' : ''}`}
+                      disabled={disabled}
                       onClick={() => onToggleCounter(card.id)}
                     >
                       <span>{card.name}</span>
@@ -454,7 +459,7 @@ function DefenseOverlay({
               </div>
             )}
             <div className="setup-actions">
-              <button className="btn" disabled={selectedCounterIds.length === 0} onClick={onUseCounter}>
+              <button className="btn" disabled={disabled || selectedCounterIds.length === 0} onClick={onUseCounter}>
                 USAR COUNTER
               </button>
             </div>
@@ -462,7 +467,7 @@ function DefenseOverlay({
         </div>
 
         <div className="setup-actions">
-          <button className="btn danger" onClick={onNoDefense}>SEM DEFESA</button>
+          <button className="btn danger" disabled={disabled} onClick={onNoDefense}>SEM DEFESA</button>
         </div>
       </div>
     </div>
@@ -715,6 +720,7 @@ function MainApp() {
   const [lastSnapshotId, setLastSnapshotId] = useState<string | null>(null);
   const [syncState, setSyncState] = useState<'idle' | 'saving' | 'syncing' | 'conflict'>('idle');
   const [syncMessage, setSyncMessage] = useState<string | null>(null);
+  const [onlineActionLocked, setOnlineActionLocked] = useState(false);
 
   const clearTransientBoardUi = () => {
     setFocusedCard(null);
@@ -1092,6 +1098,7 @@ function MainApp() {
   const remotePlayerId: PlayerId = localPlayerId === 'P1' ? 'P2' : 'P1';
   const isOnlineBoard = onlineMode === 'online';
   const isLocalUsersTurn = !isOnlineBoard || gameState.active_player === localPlayerId;
+  const isBoardBusy = isOnlineBoard && (onlineActionLocked || syncState === 'saving');
   const setupPendingPlayer =
     gameState.phase === 'setup' && waitingFor
       ? (!waitingFor.p1_ready ? 'P1' : !waitingFor.p2_ready ? 'P2' : null)
@@ -1104,13 +1111,16 @@ function MainApp() {
 
   const persistOnlineState = (nextState: GameState | null) => {
     if (!isOnlineBoard || !activeOnlineGameId || !nextState) return;
+    setOnlineActionLocked(true);
     setSyncState('saving');
-    setSyncMessage('Sincronizando sua jogada...');
+    setSyncMessage('Sincronizando etapa...');
     void saveOnlineGameState(activeOnlineGameId, nextState, nextState.turn, nextState.phase, lastSnapshotId)
-      .then((result) => {
+      .then(async (result) => {
         setLastSnapshotId(result.snapshot.id);
+        await resyncOnlineRoomState(activeOnlineGameId, { preserveSavingState: true });
         setSyncState('idle');
-        setSyncMessage('Jogada sincronizada.');
+        setSyncMessage('Mesa atualizada.');
+        setOnlineActionLocked(false);
       })
       .catch((error) => {
         if (error instanceof ApiError && error.status === 409) {
@@ -1119,12 +1129,15 @@ function MainApp() {
           }).catch((resyncError) => {
             setOnlineError(resyncError instanceof Error ? resyncError.message : 'Falha ao ressincronizar a partida.');
             setSyncState('idle');
+          }).finally(() => {
+            setOnlineActionLocked(false);
           });
           return;
         }
 
         setOnlineError(error instanceof Error ? error.message : 'Falha ao salvar a partida online.');
         setSyncState('idle');
+        setOnlineActionLocked(false);
       });
   };
 
@@ -1177,7 +1190,7 @@ function MainApp() {
 
   const handleDropCard = (e: React.DragEvent, targetPlayerId: string, zoneType: string, targetCardId?: string) => {
     e.preventDefault();
-    if (!canInteractWithPlayer(targetPlayerId as PlayerId) || !isLocalUsersTurn) return;
+    if (!canInteractWithPlayer(targetPlayerId as PlayerId) || !isLocalUsersTurn || isBoardBusy) return;
     const cardId = e.dataTransfer.getData("cardId");
     const donId = e.dataTransfer.getData("donId");
 
@@ -1194,14 +1207,14 @@ function MainApp() {
   };
 
   const handleSetupDecision = (decision: 'MULLIGAN' | 'KEEP_HAND') => {
-    if (!setupPendingPlayer || (isOnlineBoard && setupPendingPlayer !== localPlayerId)) return;
+    if (!setupPendingPlayer || (isOnlineBoard && setupPendingPlayer !== localPlayerId) || isBoardBusy) return;
     const nextState = dispatchAction({ type: 'SETUP_DECISION', playerId: setupPendingPlayer, decision });
     persistOnlineState(nextState);
     setSetupViewer(null);
   };
 
   const handleDeclareAttack = (attackerId: string, targetId: string) => {
-    if (!isLocalUsersTurn) return;
+    if (!isLocalUsersTurn || isBoardBusy) return;
     const nextState = dispatchAction({ type: 'DECLARE_ATTACK', attackerId, targetId });
     persistOnlineState(nextState);
     setFocusedCard(null);
@@ -1210,7 +1223,7 @@ function MainApp() {
   };
 
   const handleDefenseDecision = (decision: 'USE_BLOCKER' | 'USE_COUNTER' | 'NO_DEFENSE', extra: Record<string, unknown> = {}) => {
-    if (!defensePending || (isOnlineBoard && defensePending !== localPlayerId)) return;
+    if (!defensePending || (isOnlineBoard && defensePending !== localPlayerId) || isBoardBusy) return;
     const nextState = dispatchAction({ type: 'DEFENSE_DECISION', playerId: defensePending, decision, ...extra });
     persistOnlineState(nextState);
     setDefenseViewer(null);
@@ -1223,7 +1236,7 @@ function MainApp() {
   };
 
   const handleAdvancePhase = () => {
-    if (attackContext || !isLocalUsersTurn) return;
+    if (attackContext || !isLocalUsersTurn || isBoardBusy) return;
     const nextState = advancePhase();
     persistOnlineState(nextState);
   };
@@ -1237,6 +1250,7 @@ function MainApp() {
               playerId={setupPendingPlayer}
               playerState={gameState.players[setupPendingPlayer]}
               needsPass={false}
+              disabled={isBoardBusy}
               onReadyForPlayer={() => undefined}
               onDecision={handleSetupDecision}
             />
@@ -1251,6 +1265,7 @@ function MainApp() {
             playerId={setupPendingPlayer}
             playerState={gameState.players[setupPendingPlayer]}
             needsPass={needsPassScreen}
+            disabled={isBoardBusy}
             onReadyForPlayer={() => setSetupViewer(setupPendingPlayer)}
             onDecision={handleSetupDecision}
           />
@@ -1267,6 +1282,7 @@ function MainApp() {
               blockers={availableBlockers}
               counters={availableCounters}
               selectedCounterIds={selectedCounterIds}
+              disabled={isBoardBusy}
               onToggleCounter={handleToggleCounter}
               onUseCounter={() => handleDefenseDecision('USE_COUNTER', { cardIds: selectedCounterIds })}
               onUseBlocker={(blockerId) => handleDefenseDecision('USE_BLOCKER', { blockerId })}
@@ -1293,6 +1309,7 @@ function MainApp() {
             blockers={availableBlockers}
             counters={availableCounters}
             selectedCounterIds={selectedCounterIds}
+            disabled={isBoardBusy}
             onToggleCounter={handleToggleCounter}
             onUseCounter={() => handleDefenseDecision('USE_COUNTER', { cardIds: selectedCounterIds })}
             onUseBlocker={(blockerId) => handleDefenseDecision('USE_BLOCKER', { blockerId })}
@@ -1335,6 +1352,7 @@ function MainApp() {
                         <button
                           key={target.id}
                           className="action-chip"
+                          disabled={isBoardBusy}
                           onClick={() => handleDeclareAttack(focusedCard.id, target.id)}
                         >
                           {target.label}
@@ -1382,7 +1400,7 @@ function MainApp() {
         }}>
           {authUser ? 'Voltar ao lobby' : 'Voltar ao login'}
         </button>
-        <button className="btn" disabled={Boolean(attackContext) || !isLocalUsersTurn} onClick={handleAdvancePhase}>
+        <button className="btn" disabled={Boolean(attackContext) || !isLocalUsersTurn || isBoardBusy} onClick={handleAdvancePhase}>
           {gameState.phase === 'main' ? 'Encerrar Principal' : 'Próxima Fase'}
         </button>
       </div>
@@ -1410,7 +1428,7 @@ function MainApp() {
           isOpponent={false}
           playerState={gameState.players[localPlayerId]}
           playerId={localPlayerId}
-          canInteract={isLocalUsersTurn}
+          canInteract={isLocalUsersTurn && !isBoardBusy}
           revealHand={true}
           onDropCard={handleDropCard}
           onCardClick={setFocusedCard}
